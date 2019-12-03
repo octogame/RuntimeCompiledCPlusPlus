@@ -63,10 +63,10 @@ RuntimeObjectSystem::RuntimeObjectSystem()
 	, m_bCompiling( false )
 	, m_bLastLoadModuleSuccess( false )
 	, m_bAutoCompile( true )
+    , m_CurrentlyBuildingProject( 0 )
     , m_TotalLoadedModulesEver(1) // starts at one for current exe
     , m_bProtectionEnabled( true )
     , m_pImpl( 0 )
-    , m_CurrentlyBuildingProject( 0 )
 {
     ProjectSettings::ms_DefaultIntermediatePath = FileSystemUtils::GetCurrentPath() / "Runtime";
     CreatePlatformImpl();
@@ -159,8 +159,8 @@ void RuntimeObjectSystem::OnFileChange(const IAUDynArray<const char*>& filelist)
                 {
                     if( itrCurr->second == fileToBuild.filePath )
                     {
-                        BuildTool::FileToBuild fileToBuild( itrCurr->first );
-                        pBuildFileList->push_back( fileToBuild );
+                        BuildTool::FileToBuild fileToBuild2( itrCurr->first );
+                        pBuildFileList->push_back( fileToBuild2 );
                     }
                     ++itrCurr;
                 }
@@ -169,9 +169,9 @@ void RuntimeObjectSystem::OnFileChange(const IAUDynArray<const char*>& filelist)
             if( bFindIncludeDependencies )
             {
                 TFileToFilesEqualRange range = m_Projects[ proj ].m_RuntimeIncludeMap.equal_range( fileToBuild.filePath );
-                for( TFileToFilesIterator it = range.first; it != range.second; ++it )
+                for( TFileToFilesIterator it2 = range.first; it2 != range.second; ++it2 )
                 {
-                    BuildTool::FileToBuild fileToBuildFromIncludes( ( *it ).second, bForceIncludeDependencies );
+                    BuildTool::FileToBuild fileToBuildFromIncludes( ( *it2 ).second, bForceIncludeDependencies );
                     pBuildFileList->push_back( fileToBuildFromIncludes );
                 }
             }
@@ -191,6 +191,7 @@ bool RuntimeObjectSystem::GetIsCompiledComplete()
 
 void RuntimeObjectSystem::CompileAllInProject( bool bForceRecompile, unsigned short projectId_ )
 {
+    (void)bForceRecompile;
     ProjectSettings& project = GetProject( projectId_ );
     // since this is a compile all we can clear any pending compiles
     project.m_BuildFileList.clear( );
@@ -235,20 +236,34 @@ void RuntimeObjectSystem::SetAutoCompile( bool autoCompile )
 		SetupRuntimeFileTracking(constructors);
 	}
 }
-
-// RuntimeObjectSystem::AddToRuntimeFileList - filename should be cleaned of "/../" etc, see FileSystemUtils::Path::GetCleanPath()
 void RuntimeObjectSystem::AddToRuntimeFileList( const char* filename, unsigned short projectId_ )
+{
+	FileSystemUtils::Path path( filename );
+	path = path.GetCleanPath();
+	path.ToOSCanonicalCase();
+	AddToRuntimeFileListImp( path, projectId_ );
+}
+
+void RuntimeObjectSystem::AddToRuntimeFileListImp( const FileSystemUtils::Path& filename, unsigned short projectId_ )
 {
     ProjectSettings& project = GetProject( projectId_ );
     TFileList::iterator it = std::find( project.m_RuntimeFileList.begin( ), project.m_RuntimeFileList.end( ), filename );
     if( it == project.m_RuntimeFileList.end( ) )
 	{
         project.m_RuntimeFileList.push_back( filename );
-        m_pFileChangeNotifier->Watch( filename, this );
+        m_pFileChangeNotifier->Watch( filename.c_str(), this );
 	}
 }
 
 void RuntimeObjectSystem::RemoveFromRuntimeFileList( const char* filename, unsigned short projectId_ )
+{
+	FileSystemUtils::Path path( filename );
+	path = path.GetCleanPath();
+	path.ToOSCanonicalCase();
+	RemoveFromRuntimeFileListImp( path, projectId_ );
+}
+
+void RuntimeObjectSystem::RemoveFromRuntimeFileListImp( const FileSystemUtils::Path& filename, unsigned short projectId_ )
 {
     ProjectSettings& project = GetProject( projectId_ );
     TFileList::iterator it = std::find( project.m_RuntimeFileList.begin( ), project.m_RuntimeFileList.end( ), filename );
@@ -313,14 +328,14 @@ void RuntimeObjectSystem::StartRecompile()
 
 
 	//Add libraries which need linking
-	std::vector<FileSystemUtils::Path> linkLibraryList;
+	std::vector<FileSystemUtils::Path> linkLibraryList2;
 	for( size_t i = 0; i < ourBuildFileList.size(); ++ i )
 	{
 
         TFileToFilesEqualRange range = m_Projects[ project ].m_RuntimeLinkLibraryMap.equal_range( ourBuildFileList[ i ].filePath );
 		for(TFileToFilesIterator it=range.first; it!=range.second; ++it)
 		{
-			linkLibraryList.push_back( it->second );
+			linkLibraryList2.push_back( it->second );
 		}
 	}
 
@@ -355,7 +370,7 @@ void RuntimeObjectSystem::StartRecompile()
 
     m_pBuildTool->BuildModule(  ourBuildFileList,
                                 m_Projects[ project ].m_CompilerOptions,
-								linkLibraryList, m_CurrentlyCompilingModuleName );
+								linkLibraryList2, m_CurrentlyCompilingModuleName );
 }
 
 bool RuntimeObjectSystem::LoadCompiledModule()
@@ -463,11 +478,20 @@ void RuntimeObjectSystem::SetupRuntimeFileTracking(const IAUDynArray<IObjectCons
 		}
 		Path filePath = pFilename;
         filePath = filePath.GetCleanPath();
-        filePath = FindFile( filePath );
+        bool bFound = false;
+        filePath = FindFile( filePath, &bFound );
+        if( !bFound )
+        {
+        #ifdef _WIN32
+        if( m_pCompilerLogger ) { m_pCompilerLogger->LogWarning("Source file not found may be due to compile option /FC not being set.\n"); }
+        #else
+        if( m_pCompilerLogger ) { m_pCompilerLogger->LogWarning("Source file not found may be due to macro COMPILE_PATH not being set.\n"); }
+        #endif
+        }
 
         unsigned short projectId = constructors_[ i ]->GetProjectId();
         ProjectSettings& project = GetProject( projectId );
-        AddToRuntimeFileList( filePath.c_str( ), projectId );
+        AddToRuntimeFileListImp( filePath, projectId );
 
 		if( !bFirstTime )
 		{
@@ -511,7 +535,7 @@ void RuntimeObjectSystem::SetupRuntimeFileTracking(const IAUDynArray<IObjectCons
 				TFileToFilePair includePathPair;
 				includePathPair.first = pathInc;
 				includePathPair.second = filePath;
-                AddToRuntimeFileList( pathInc.c_str(), projectId );
+                AddToRuntimeFileListImp( pathInc, projectId );
                 project.m_RuntimeIncludeMap.insert( includePathPair );
 			}
 
@@ -571,7 +595,7 @@ void RuntimeObjectSystem::SetupRuntimeFileTracking(const IAUDynArray<IObjectCons
 					if( range.first != range.second )
 					{
 						// add source file to runtime file list
-						AddToRuntimeFileList( pathSrc.c_str(), projectId );
+						AddToRuntimeFileListImp( pathSrc, projectId );
 
 						// also add this as a source dependency, so it gets force compiled on change of header (and not just compiled)
 						TFileToFilePair includePathPair;
@@ -656,7 +680,7 @@ void RuntimeObjectSystem::CleanObjectFiles() const
     }
 }
 
-FileSystemUtils::Path RuntimeObjectSystem::FindFile( const FileSystemUtils::Path& input )
+FileSystemUtils::Path RuntimeObjectSystem::FindFile( const FileSystemUtils::Path& input, bool* pFound )
 {
     FileSystemUtils::Path requestedDirectory = input;
     FileSystemUtils::Path filename;
@@ -772,12 +796,18 @@ FileSystemUtils::Path RuntimeObjectSystem::FindFile( const FileSystemUtils::Path
                 }
             }
         }
+
+        foundFile.ToOSCanonicalCase();
     }
 
-    if( !foundFile.Exists() )
+    bool bFound = foundFile.Exists();
+    if( pFound )
+    {
+        *pFound = bFound;
+    }
+    if( !bFound )
     {
         if( m_pCompilerLogger ) {  m_pCompilerLogger->LogWarning( "Could not find Directory Mapping for: %s\n", input.c_str() ); }
-        ++m_NumNotFoundSourceFiles;
     }
     return foundFile;
 }
@@ -879,7 +909,7 @@ static int TestBuildFile( ICompilerLogger* pLog, RuntimeObjectSystem* pRTObjSys,
             else
             {
                 ++numErrors;
-                if( pRTObjSys->GetNumberLoadedModules() == numCurrLoadedModules )
+                if( (int)pRTObjSys->GetNumberLoadedModules() == numCurrLoadedModules )
                 {
                     if( !callback->TestBuildCallback( file.c_str(), TESTBUILDRRESULT_BUILD_FAILED ) ) { return -numErrors; }
                 }

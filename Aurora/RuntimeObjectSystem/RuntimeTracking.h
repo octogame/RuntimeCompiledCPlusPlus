@@ -41,7 +41,7 @@ struct SourceDependencyInfo
 
 struct RuntimeTackingInfo
 {
-    static RuntimeTackingInfo GetNULL() { RuntimeTackingInfo ret = {0}; return ret; }
+	static RuntimeTackingInfo GetNULL() {  return RuntimeTackingInfo(); }
 	SourceDependencyInfo sourceDependencyInfo;
 	const char*          linkLibrary;
 	const char*          includeFile;
@@ -59,10 +59,13 @@ struct IRuntimeTracking
 	IRuntimeTracking( size_t max ) : MaxNum( max )
 	{
 	}
+    
+    // IRuntimeTracking does not need a virtual dtor as it is never polymorphically deleted.
 
 	// GetIncludeFile may return 0, so you should iterate through to GetMaxNum() ignoring 0 returns
 	virtual RuntimeTackingInfo GetTrackingInfo( size_t Num_ ) const
 	{
+		(void)Num_;
 		return RuntimeTackingInfo::GetNULL();
 	}
 
